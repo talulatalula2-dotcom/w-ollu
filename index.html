@@ -142,15 +142,15 @@
       <div class="hero">
         <div class="eyebrow">✨ 오늘 모은 월루 시간</div>
         <div class="total" id="todayTotal">0시간 00분</div>
-        <div class="hero-note"><span class="token" id="todayCount">총 0번 쉬었어요</span><span>틈틈이 쌓여도 괜찮아!</span></div>
+        <div class="hero-note"><span class="token" id="todayCount">총 0번 쉬었어요</span><span>🍚 12~13시 제외 · 🏡 17:30 자동 종료</span></div>
       </div>
 
       <section class="panel timer-panel" aria-label="월루 타이머">
         <div class="status"><span class="light" id="statusLight"></span><span id="statusText">타이머 대기 중</span></div>
         <div class="timer" id="timer" role="timer" aria-live="off">00:00:00</div>
-        <div class="timer-caption">이번에 쉬고 있는 시간</div>
+        <div class="timer-caption">이번에 인정되는 월루 시간</div>
         <button type="button" class="main-action" id="toggleBtn"><span aria-hidden="true">▶</span> 월루 시작하기</button>
-        <p class="timer-help">잠깐 쉬었다 다시 시작해도 오늘 시간에 합쳐져요.<br>화면을 잠가도 시간은 계속 계산돼요.</p>
+        <p class="timer-help">12:00~13:00 점심시간은 자동으로 빼요.<br>17:30에는 타이머가 자동 종료돼요. 화면을 잠가도 적용돼요.</p>
       </section>
 
       <div class="two" aria-label="요약 통계">
@@ -160,7 +160,7 @@
 
       <div class="section-top"><h2>오늘의 쉬는 시간</h2><button type="button" class="pill-button" id="openAdd">+ 직접 추가</button></div>
       <div class="session-list" id="todaySessions"></div>
-      <p class="caption">타이머를 종료하면 자동 저장돼요. 빠뜨린 시간은 직접 추가할 수 있어요.</p>
+      <p class="caption">기록은 근무 중 월루 시간만 계산해요. 점심 12~13시, 퇴근 17:30 이후는 제외돼요.</p>
     </section>
 
     <section id="historyView" class="view" aria-label="날짜별 기록" hidden>
@@ -175,6 +175,10 @@
     <section id="settingsView" class="view" aria-label="설정 및 백업" hidden>
       <h1 class="page-title">내 기록 관리 ⚙️</h1>
       <p class="page-intro">소중한 월루 기록은 내 브라우저에만 저장돼요.</p>
+      <div class="panel setting-card">
+        <h2 class="setting-title">⏰ 월루 자동 계산 규칙</h2>
+        <p class="setting-desc"><strong>점심시간 12:00~13:00:</strong> 자동으로 0분 처리해요.<br><strong>퇴근시간 17:30:</strong> 실행 중이어도 자동 종료하고, 그 이후에는 새로 시작할 수 없어요.<br>기기 현지 시간 기준으로 계산하며, 이전 기록에도 이 규칙을 적용해 통계를 보여줘요. 기록 원본은 지우지 않아요.</p>
+      </div>
       <div class="panel setting-card">
         <h2 class="setting-title">📦 기록 백업 & 복원</h2>
         <p class="setting-desc">휴대폰을 바꾸거나 브라우저 기록이 삭제될 때를 대비해 파일로 저장하세요. 복원하면 기존 기록을 교체해요.</p>
@@ -204,7 +208,7 @@
   <dialog id="addDialog" aria-labelledby="addTitle">
     <form id="addForm" class="dialog-inner">
       <h2 id="addTitle" class="dialog-title">월루 기록 직접 추가 ☕</h2>
-      <p class="dialog-sub">놓친 쉬는 시간도 기록해요. 종료 시간이 더 이르면 다음 날 종료로 계산돼요.</p>
+      <p class="dialog-sub">놓친 시간도 기록해요. 점심 12~13시와 매일 17:30 이후는 자동으로 제외돼요.</p>
       <label class="field">쉬기 시작한 날짜<input type="date" id="manualDate" required></label>
       <label class="field">시작 시간<input type="time" id="manualStart" required></label>
       <label class="field">종료 시간<input type="time" id="manualEnd" required></label>
@@ -290,8 +294,17 @@
       function activeSessions(now) {
         return state.activeStart === null ? state.sessions : state.sessions.concat([{ id:'active', start:Math.min(state.activeStart,now), end:now, active:true }]);
       }
-      // Merge overlapping time intervals, so accidentally overlapping manual records don't double-count time.
-      function sumWithin(sessions, from, until) {
+      // Existing records remain stored as raw intervals. Only the displayed/countable
+      // portion is changed: exclude 12:00–13:00 and 17:30–midnight, every local day.
+      function localClock(day, hour, minute=0) {
+        const d=new Date(day);
+        d.setHours(hour,minute,0,0);
+        return d.getTime();
+      }
+      function endOfWorkday(timestamp) { return localClock(timestamp,17,30); }
+      // Merge overlaps so accidentally overlapping manual sessions never double-count.
+      function rawSumWithin(sessions, from, until) {
+        if (until<=from) return 0;
         const chunks = sessions.map(s => [Math.max(from,s.start),Math.min(until,s.end)])
           .filter(([a,b]) => b>a).sort((a,b) => a[0]-b[0]);
         let total=0, left=null, right=null;
@@ -302,6 +315,33 @@
         }
         return total+(left===null?0:right-left);
       }
+      function sumWithin(sessions, from, until) {
+        if (until<=from || !sessions.length) return 0;
+        let total=0, day=dayStart(from);
+        // Each call covers at most seven days in normal operation.
+        for (let i=0; day<until && i<370; i++,day=addDays(day,1)) {
+          const windows=[[day,localClock(day,12)],[localClock(day,13),endOfWorkday(day)]];
+          for (const [a,b] of windows) {
+            total+=rawSumWithin(sessions,Math.max(from,a),Math.min(until,b));
+          }
+        }
+        return total;
+      }
+      // Timer can be left in the background or the phone can be asleep at 17:30.
+      // On the next paint/open, persist its final interval ending at 17:30 exactly.
+      function autoCloseExpiredTimer(now) {
+        if (state.activeStart===null) return false;
+        const cutoff=endOfWorkday(state.activeStart);
+        if (now<cutoff) return false;
+        if (cutoff>state.activeStart &&
+            sumWithin([{start:state.activeStart,end:cutoff}],state.activeStart,cutoff)>0) {
+          state.sessions.push({id:makeId(),start:state.activeStart,end:cutoff});
+        }
+        state.activeStart=null;
+        save();
+        toast('17:30 퇴근! 월루가 자동 저장됐어요 🏡');
+        return true;
+      }
       function formatDate(t) {
         return new Date(t).toLocaleDateString('ko-KR', { month:'long',day:'numeric', weekday:'short' });
       }
@@ -310,10 +350,11 @@
         const nextDay=dayStart(s.end)>dayStart(s.start);
         const endLabel=s.active ? '진행 중' : `${shortTime(partEnd)}${nextDay && partEnd===s.end?' (다음 날)':''}`;
         const remove = s.active ? '' : `<button type="button" class="remove" data-delete="${s.id}" aria-label="이 기록 삭제">×</button>`;
+        const counted=sumWithin([s],partStart,partEnd);
         return `<article class="session"><span class="session-icon" aria-hidden="true">${s.active?'🌱':'☕'}</span>
           <div class="session-main"><div class="session-title">${s.active?'지금 월루하는 중':'월루 한 잔 완료!'}</div>
           <div class="session-time">${shortTime(partStart)} ~ ${endLabel}</div></div>
-          <div class="session-side"><span class="session-length">${niceTime(partEnd-partStart)}</span>${remove}</div></article>`;
+          <div class="session-side"><span class="session-length">${niceTime(counted)}</span>${remove}</div></article>`;
       }
       function renderHistory(sessions, today, tomorrow) {
         const all = sessions.filter(s => s.end > s.start).slice().sort((a,b) => b.start-a.start);
@@ -324,7 +365,8 @@
           let steps=0;
           while (cursor < s.end && steps++<8) {
             const next=addDays(cursor,1);
-            if (s.start<next && s.end>cursor) {
+            if (s.start<next && s.end>cursor &&
+                (s.active || sumWithin([s],cursor,next)>0)) {
               const key=dateKey(cursor);
               if (!groups.has(key)) groups.set(key, { start:cursor, sessions:[] });
               groups.get(key).sessions.push({ s, from:cursor, until:next });
@@ -341,11 +383,16 @@
         }).join('');
       }
       function render() {
-        const now=Date.now(), today=dayStart(now), tomorrow=addDays(today,1), weekStart=addDays(today,-6);
+        const now=Date.now();
+        autoCloseExpiredTimer(now);
+        const today=dayStart(now), tomorrow=addDays(today,1), weekStart=addDays(today,-6);
         const sessions=activeSessions(now), running=state.activeStart!==null;
-        const todayRecords=sessions.filter(s => s.start<tomorrow && s.end>today).sort((a,b)=>b.start-a.start);
+        const afterWork=now>=endOfWorkday(now);
+        const atLunch=now>=localClock(now,12) && now<localClock(now,13);
+        const todayRecords=sessions.filter(s => s.start<tomorrow && s.end>today &&
+          (s.active || sumWithin([s],today,tomorrow)>0)).sort((a,b)=>b.start-a.start);
         const todayMs=sumWithin(sessions,today,tomorrow), weekMs=sumWithin(sessions,weekStart,tomorrow);
-        const todayCount=todayRecords.length;
+        const todayCount=todayRecords.filter(s=>sumWithin([s],today,tomorrow)>0).length;
         const key=dateKey(now);
         if (renderDay!==key) { renderDay=key; $('todayDate').textContent = new Date(now).toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric',weekday:'long'}); }
         $('todayTotal').textContent = niceTime(todayMs);
@@ -353,11 +400,12 @@
         $('todayStatCount').textContent = `${todayCount}회`;
         $('weekTotal').textContent = niceTime(weekMs);
         $('historyWeekTotal').textContent = niceTime(weekMs);
-        $('timer').textContent = running ? secondsClock(now-Math.min(state.activeStart,now)) : '00:00:00';
-        $('statusText').textContent = running ? '지금 월루하는 중 🌱' : '타이머 대기 중';
+        $('timer').textContent = running ? secondsClock(sumWithin([{start:state.activeStart,end:now}],state.activeStart,now)) : '00:00:00';
+        $('statusText').textContent = running && atLunch ? '점심시간 제외 중 🍚' : running ? '지금 월루하는 중 🌱' : afterWork ? '17:30 퇴근! 오늘은 마감 🏡' : '타이머 대기 중';
         $('statusLight').classList.toggle('running',running);
         $('toggleBtn').classList.toggle('running',running);
-        $('toggleBtn').innerHTML = running ? '<span aria-hidden="true">■</span> 월루 끝내고 저장' : '<span aria-hidden="true">▶</span> 월루 시작하기';
+        $('toggleBtn').disabled=!running && afterWork;
+        $('toggleBtn').innerHTML = running ? '<span aria-hidden="true">■</span> 월루 끝내고 저장' : afterWork ? '<span aria-hidden="true">✓</span> 오늘은 퇴근했어요' : '<span aria-hidden="true">▶</span> 월루 시작하기';
         $('todaySessions').innerHTML=todayRecords.length ? todayRecords.map(s=>sessionMarkup(s,today,tomorrow)).join('')
           : '<div class="empty"><span class="emoji">🍀</span>오늘 기록이 아직 없네요.<br>버튼 한 번으로 쉬는 시간을 모아봐요!</div>';
         if (currentView==='history') {
@@ -376,9 +424,18 @@
       }
       $('toggleBtn').addEventListener('click',()=>{
         const now=Date.now();
-        if (state.activeStart===null) { state.activeStart=now; toast('월루 시작! 🌱'); }
-        else { if (now>state.activeStart) state.sessions.push({id:makeId(),start:state.activeStart,end:now}); state.activeStart=null; toast('오늘 기록에 저장했어요 ☕'); }
-        save(); render();
+        if (autoCloseExpiredTimer(now)) {render();return;}
+        if (state.activeStart===null) {
+          if (now>=endOfWorkday(now)) {toast('17:30 이후엔 월루를 시작할 수 없어요 🏡');render();return;}
+          state.activeStart=now;
+          toast(now>=localClock(now,12) && now<localClock(now,13) ? '점심시간은 자동 제외돼요 🍚' : '월루 시작! 🌱');
+        } else {
+          const counted=sumWithin([{start:state.activeStart,end:now}],state.activeStart,now);
+          if (counted>0) state.sessions.push({id:makeId(),start:state.activeStart,end:now});
+          state.activeStart=null;
+          toast(counted>0?'오늘 기록에 저장했어요 ☕':'제외 시간이라 추가된 월루는 없어요 🍚');
+        }
+        save();render();
       });
       document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{
         currentView=btn.dataset.view;
@@ -413,8 +470,11 @@
         if (!Number.isFinite(from)||!Number.isFinite(until)||from>=until) {toast('시작과 종료 시간이 같거나 올바르지 않아요.');return;}
         if (until>Date.now()+60000) {toast('미래 시간은 기록할 수 없어요.');return;}
         if (until-from>DAY) {toast('한 번에 24시간까지만 추가할 수 있어요.');return;}
+        if (sumWithin([{start:from,end:until}],from,until)===0) {
+          toast('점심시간이나 퇴근 후라 기록할 월루가 없어요.'); return;
+        }
         state.sessions.push({id:makeId(),start:from,end:until});
-        save(); $('addDialog').close(); toast('빠진 시간도 기록했어요 ✨'); render();
+        save(); $('addDialog').close(); toast('제외 시간을 빼고 기록했어요 ✨'); render();
       });
       function onDelete(e) {
         const btn=e.target.closest('[data-delete]');
